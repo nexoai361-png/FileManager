@@ -13,6 +13,8 @@ export interface FileItem {
   sizeBytes: number;
   sizeFormatted: string;
   modifiedDate: string;
+  permissions?: string;
+  path?: string;
   content?: string;
   children?: FileItem[];
 }
@@ -418,9 +420,20 @@ class FileManagerApp {
   private currentFont: string = 'inter';
   private isSearchOpen: boolean = false;
 
+  // ZArchiver & Termux Storage states
+  private storageLocations: Array<{ id: string; name: string; path: string; description: string; isAvailable: boolean }> = [];
+  private activeLocationId: string = '';
+  private hasStoragePermission: boolean = true;
+  private isTermux: boolean = false;
+  private isSelectionMode: boolean = false;
+  private selectedItemPaths: Set<string> = new Set();
+  private clipboard: { items: string[]; action: 'copy' | 'move'; sourceDir: string } | null = null;
+
   // DOM Elements
   private appTitleEl!: HTMLElement;
   private btnBackEl!: HTMLButtonElement;
+  private btnStorageLocationEl!: HTMLButtonElement;
+  private btnToggleSelectEl!: HTMLButtonElement;
   private btnOpenSearchEl!: HTMLButtonElement;
   private btnTopMenuEl!: HTMLButtonElement;
   private searchSectionEl?: HTMLElement | null;
@@ -454,11 +467,30 @@ class FileManagerApp {
   private currentFontLabelEl!: HTMLElement;
   private navTabs!: NodeListOf<HTMLButtonElement>;
 
+  // Selection & Clipboard Elements
+  private selectionBarEl!: HTMLElement;
+  private selectionCountEl!: HTMLElement;
+  private btnSelectAllEl!: HTMLButtonElement;
+  private btnSelCopyEl!: HTMLButtonElement;
+  private btnSelCutEl!: HTMLButtonElement;
+  private btnSelCompressEl!: HTMLButtonElement;
+  private btnSelDeleteEl!: HTMLButtonElement;
+  private btnSelCloseEl!: HTMLButtonElement;
+  private clipboardBarEl!: HTMLElement;
+  private clipboardDescTextEl!: HTMLElement;
+  private btnClipboardPasteEl!: HTMLButtonElement;
+  private btnClipboardCancelEl!: HTMLButtonElement;
+
+  // Termux Storage Banner Elements
+  private termuxStorageBannerEl!: HTMLElement;
+  private btnRunTermuxSetupEl!: HTMLButtonElement;
+  private btnViewTermuxGuideEl!: HTMLButtonElement;
+
   // Callback holder for confirmation modal
   private modalConfirmHandler: (() => void) | null = null;
 
   constructor() {
-    this.fileSystem = JSON.parse(JSON.stringify(INITIAL_FILE_SYSTEM));
+    this.fileSystem = [];
   }
 
   public init(): void {
@@ -473,12 +505,15 @@ class FileManagerApp {
     const animationsEnabled = savedAnimations !== null ? savedAnimations === 'true' : true;
     this.applyAnimations(animationsEnabled, false);
     this.setActiveTab(this.activeTab);
+    this.fetchTermuxStatus();
     this.render();
   }
 
   private bindDOMElements(): void {
     this.appTitleEl = document.getElementById('app-title') as HTMLElement;
     this.btnBackEl = document.getElementById('btn-back') as HTMLButtonElement;
+    this.btnStorageLocationEl = document.getElementById('btn-storage-location') as HTMLButtonElement;
+    this.btnToggleSelectEl = document.getElementById('btn-toggle-select') as HTMLButtonElement;
     this.btnOpenSearchEl = document.getElementById('btn-open-search') as HTMLButtonElement;
     this.btnTopMenuEl = document.getElementById('btn-top-menu') as HTMLButtonElement;
     this.searchSectionEl = document.getElementById('search-section') as HTMLElement | null;
@@ -511,6 +546,25 @@ class FileManagerApp {
     this.settingFontRowEl = document.getElementById('setting-font-row') as HTMLElement;
     this.currentFontLabelEl = document.getElementById('current-font-label') as HTMLElement;
     this.navTabs = document.querySelectorAll('.nav-tab');
+
+    // Selection & Clipboard
+    this.selectionBarEl = document.getElementById('selection-bar') as HTMLElement;
+    this.selectionCountEl = document.getElementById('selection-count') as HTMLElement;
+    this.btnSelectAllEl = document.getElementById('btn-select-all') as HTMLButtonElement;
+    this.btnSelCopyEl = document.getElementById('btn-sel-copy') as HTMLButtonElement;
+    this.btnSelCutEl = document.getElementById('btn-sel-cut') as HTMLButtonElement;
+    this.btnSelCompressEl = document.getElementById('btn-sel-compress') as HTMLButtonElement;
+    this.btnSelDeleteEl = document.getElementById('btn-sel-delete') as HTMLButtonElement;
+    this.btnSelCloseEl = document.getElementById('btn-sel-close') as HTMLButtonElement;
+    this.clipboardBarEl = document.getElementById('clipboard-bar') as HTMLElement;
+    this.clipboardDescTextEl = document.getElementById('clipboard-desc-text') as HTMLElement;
+    this.btnClipboardPasteEl = document.getElementById('btn-clipboard-paste') as HTMLButtonElement;
+    this.btnClipboardCancelEl = document.getElementById('btn-clipboard-cancel') as HTMLButtonElement;
+
+    // Termux Storage Banner
+    this.termuxStorageBannerEl = document.getElementById('termux-storage-banner') as HTMLElement;
+    this.btnRunTermuxSetupEl = document.getElementById('btn-run-termux-setup') as HTMLButtonElement;
+    this.btnViewTermuxGuideEl = document.getElementById('btn-view-termux-guide') as HTMLButtonElement;
   }
 
   private attachEventListeners(): void {
@@ -562,6 +616,21 @@ class FileManagerApp {
     });
 
     // Top menu actions
+    document.getElementById('menu-compress-folder')?.addEventListener('click', () => {
+      this.closeAllMenus();
+      this.promptCompressFolder();
+    });
+
+    document.getElementById('menu-switch-storage')?.addEventListener('click', () => {
+      this.closeAllMenus();
+      this.showStorageSwitchModal();
+    });
+
+    document.getElementById('menu-termux-guide')?.addEventListener('click', () => {
+      this.closeAllMenus();
+      this.showTermuxGuideModal();
+    });
+
     document.getElementById('menu-sort-name')?.addEventListener('click', () => {
       this.sortCriteria = 'name';
       this.closeAllMenus();
@@ -593,20 +662,117 @@ class FileManagerApp {
 
     document.getElementById('menu-refresh')?.addEventListener('click', () => {
       this.closeAllMenus();
+      this.fetchTermuxStatus();
       this.renderFileList();
       this.showToast('Folder refreshed');
     });
 
+    // Top bar storage badge & selection toggle
+    this.btnStorageLocationEl?.addEventListener('click', () => {
+      this.showStorageSwitchModal();
+    });
+
+    this.btnToggleSelectEl?.addEventListener('click', () => {
+      this.toggleSelectionMode();
+    });
+
+    // Selection Bar Actions
+    this.btnSelectAllEl?.addEventListener('click', () => {
+      this.toggleSelectAll();
+    });
+
+    this.btnSelCopyEl?.addEventListener('click', () => {
+      this.copySelectedItems();
+    });
+
+    this.btnSelCutEl?.addEventListener('click', () => {
+      this.cutSelectedItems();
+    });
+
+    this.btnSelCompressEl?.addEventListener('click', () => {
+      this.compressSelectedItems();
+    });
+
+    this.btnSelDeleteEl?.addEventListener('click', () => {
+      this.deleteSelectedItems();
+    });
+
+    this.btnSelCloseEl?.addEventListener('click', () => {
+      this.toggleSelectionMode(false);
+    });
+
+    // Clipboard Bar Actions
+    this.btnClipboardPasteEl?.addEventListener('click', () => {
+      this.pasteClipboard();
+    });
+
+    this.btnClipboardCancelEl?.addEventListener('click', () => {
+      this.clearClipboard();
+    });
+
+    // Termux Storage Banner
+    this.btnRunTermuxSetupEl?.addEventListener('click', () => {
+      this.runTermuxSetupStorage();
+    });
+
+    this.btnViewTermuxGuideEl?.addEventListener('click', () => {
+      this.showTermuxGuideModal();
+    });
+
     // Item Contextual Menu Actions
+    document.getElementById('item-action-view-archive')?.addEventListener('click', () => {
+      if (!this.selectedItem) return;
+      const item = this.selectedItem;
+      this.closeAllMenus();
+      this.viewArchiveContents(item);
+    });
+
+    document.getElementById('item-action-extract-here')?.addEventListener('click', () => {
+      if (!this.selectedItem) return;
+      const item = this.selectedItem;
+      this.closeAllMenus();
+      this.extractArchive(item, false);
+    });
+
+    document.getElementById('item-action-extract-folder')?.addEventListener('click', () => {
+      if (!this.selectedItem) return;
+      const item = this.selectedItem;
+      this.closeAllMenus();
+      this.extractArchive(item, true);
+    });
+
+    document.getElementById('item-action-compress')?.addEventListener('click', () => {
+      if (!this.selectedItem) return;
+      const item = this.selectedItem;
+      this.closeAllMenus();
+      this.promptCompress([item.path || item.name], item.name);
+    });
+
     document.getElementById('item-action-open')?.addEventListener('click', () => {
       if (!this.selectedItem) return;
       const item = this.selectedItem;
       this.closeAllMenus();
       if (item.type === 'folder') {
         this.navigateToFolder(item.name);
+      } else if (item.type === 'archive') {
+        this.viewArchiveContents(item);
       } else {
         this.openFileDetailsOrViewer(item);
       }
+    });
+
+    document.getElementById('item-action-copy')?.addEventListener('click', () => {
+      if (!this.selectedItem) return;
+      const item = this.selectedItem;
+      this.closeAllMenus();
+      this.setClipboard([item.path || item.name], 'copy');
+    });
+
+    document.getElementById('item-action-cut')?.addEventListener('click', () => {
+      if (!this.selectedItem) return;
+      const item = this.selectedItem;
+      this.closeAllMenus();
+      this.setClipboard([item.path || item.name], 'move');
     });
 
     document.getElementById('item-action-rename')?.addEventListener('click', () => {
@@ -646,6 +812,12 @@ class FileManagerApp {
       e.stopPropagation();
       this.closeAllMenus();
       this.promptNewFile();
+    });
+
+    document.getElementById('btn-fab-compress')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.closeAllMenus();
+      this.promptCompressFolder();
     });
 
     this.toggleAnimationsEl?.addEventListener('click', () => {
@@ -738,25 +910,13 @@ class FileManagerApp {
 
         let targetFolder = '';
         if (folderType === 'Images') {
-          targetFolder = this.fileSystem.some((i) => i.name === 'Pictures')
-            ? 'Pictures'
-            : this.fileSystem.some((i) => i.name === 'DCIM')
-            ? 'DCIM'
-            : '';
+          targetFolder = 'Pictures';
         } else if (folderType === 'Videos') {
-          targetFolder = this.fileSystem.some((i) => i.name === 'Movies')
-            ? 'Movies'
-            : this.fileSystem.some((i) => i.name === 'Videos')
-            ? 'Videos'
-            : '';
+          targetFolder = 'Movies';
         } else if (folderType === 'Audio') {
-          targetFolder = this.fileSystem.some((i) => i.name === 'Music')
-            ? 'Music'
-            : this.fileSystem.some((i) => i.name === 'Audio')
-            ? 'Audio'
-            : '';
+          targetFolder = 'Music';
         } else if (folderType === 'Documents') {
-          targetFolder = this.fileSystem.some((i) => i.name === 'Documents') ? 'Documents' : '';
+          targetFolder = 'Documents';
         }
 
         if (targetFolder) {
@@ -827,6 +987,17 @@ class FileManagerApp {
     this.fileListEl.addEventListener('click', (e: MouseEvent) => {
       const target = e.target as HTMLElement;
 
+      // Check if clicked the checkbox
+      const checkbox = target.closest('.file-checkbox') as HTMLInputElement | null;
+      if (checkbox) {
+        e.stopPropagation();
+        const itemPath = checkbox.getAttribute('data-path');
+        if (itemPath) {
+          this.toggleSelectItem(itemPath);
+        }
+        return;
+      }
+
       // Check if clicked the overflow button
       const menuBtn = target.closest('.row-action-btn.file-menu-btn') as HTMLElement;
       if (menuBtn) {
@@ -844,12 +1015,20 @@ class FileManagerApp {
       // Check if clicked anywhere on a row
       const row = target.closest('.file-row') as HTMLElement;
       if (row) {
+        const itemPath = row.getAttribute('data-path');
+        if (this.isSelectionMode && itemPath) {
+          this.toggleSelectItem(itemPath);
+          return;
+        }
+
         const itemId = row.getAttribute('data-id');
         if (itemId) {
           const item = this.findItemInCurrentDir(itemId);
           if (item) {
             if (item.type === 'folder') {
               this.navigateToFolder(item.name);
+            } else if (item.type === 'archive') {
+              this.viewArchiveContents(item);
             } else {
               this.openFileDetailsOrViewer(item);
             }
@@ -1220,80 +1399,76 @@ class FileManagerApp {
   }
 
   // Home View Rendering & Dynamic Info
-  private renderHomeView(): void {
-    // 1. Storage Metric
-    const metricEl = document.getElementById('home-storage-metric');
-    if (metricEl) {
-      metricEl.textContent = '24.5 GB / 64 GB';
-    }
+  private async renderHomeView(): Promise<void> {
+    try {
+      const res = await fetch('/api/storage-info');
+      const data = await res.json();
+      if (data.success) {
+        // 1. Storage Metric & Progress
+        const metricEl = document.getElementById('home-storage-metric');
+        if (metricEl) {
+          metricEl.textContent = `${data.usedFormatted} / ${data.totalFormatted}`;
+        }
+        const progressFill = document.getElementById('home-storage-progress-fill');
+        if (progressFill) {
+          progressFill.style.width = `${data.usedPercent}%`;
+        }
 
-    // 2. Render Recent Files List using @crabnebula/file-icons
-    const recentListEl = document.getElementById('home-recent-list');
-    if (recentListEl) {
-      const allFiles: { file: FileItem; path: string[] }[] = [];
-      const collectFiles = (items: FileItem[], path: string[]) => {
-        for (const item of items) {
-          if (item.type === 'file') {
-            allFiles.push({ file: item, path });
-          } else if (item.children) {
-            collectFiles(item.children, [...path, item.name]);
+        // 2. Render Recent Files List using @crabnebula/file-icons
+        const recentListEl = document.getElementById('home-recent-list');
+        if (recentListEl) {
+          if (!data.recentFiles || data.recentFiles.length === 0) {
+            recentListEl.innerHTML = '<div style="padding: 10px 0; color: var(--text-secondary); font-size: 13.5px;">No recent files found</div>';
+          } else {
+            recentListEl.innerHTML = data.recentFiles
+              .map((file: any) => {
+                const { svg } = getFileAndFolderIcon(file);
+                return `
+                  <div class="home-list-row home-file-row" data-id="${file.id}">
+                    <button type="button" class="home-row-left home-file-open-btn" data-id="${file.id}" title="Open ${this.escapeHtml(file.name)}">
+                      <span class="home-file-icon" aria-hidden="true">${svg}</span>
+                      <span class="home-row-label">${this.escapeHtml(file.name)}</span>
+                    </button>
+                    <button type="button" class="home-row-menu-btn icon-btn" data-id="${file.id}" aria-label="More options for ${this.escapeHtml(file.name)}" title="More options">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                        <circle cx="12" cy="5" r="1.75"/>
+                        <circle cx="12" cy="12" r="1.75"/>
+                        <circle cx="12" cy="19" r="1.75"/>
+                      </svg>
+                    </button>
+                  </div>
+                `;
+              })
+              .join('');
+
+            // Wire click handlers for open and options menu
+            recentListEl.querySelectorAll('.home-file-open-btn').forEach((btn) => {
+              btn.addEventListener('click', () => {
+                const id = btn.getAttribute('data-id');
+                const target = data.recentFiles.find((r: any) => r.id === id);
+                if (target) {
+                  this.currentPath = target.path || [];
+                  this.openFileDetailsOrViewer(target);
+                }
+              });
+            });
+
+            recentListEl.querySelectorAll('.home-row-menu-btn').forEach((btn) => {
+              btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = btn.getAttribute('data-id');
+                const target = data.recentFiles.find((r: any) => r.id === id);
+                if (target) {
+                  this.currentPath = target.path || [];
+                  this.openItemMenu(target, btn as HTMLElement);
+                }
+              });
+            });
           }
         }
-      };
-      collectFiles(this.fileSystem, []);
-
-      // Sort by modified date descending (newest first)
-      allFiles.sort((a, b) => new Date(b.file.modifiedDate).getTime() - new Date(a.file.modifiedDate).getTime());
-      const recentSlice = allFiles.slice(0, 5);
-
-      if (recentSlice.length === 0) {
-        recentListEl.innerHTML = '<div style="padding: 10px 0; color: var(--text-secondary); font-size: 13.5px;">No recent files</div>';
-      } else {
-        recentListEl.innerHTML = recentSlice
-          .map(({ file }) => {
-            const { svg } = getFileAndFolderIcon(file);
-            return `
-              <div class="home-list-row home-file-row" data-id="${file.id}">
-                <button type="button" class="home-row-left home-file-open-btn" data-id="${file.id}" title="Open ${this.escapeHtml(file.name)}">
-                  <span class="home-file-icon" aria-hidden="true">${svg}</span>
-                  <span class="home-row-label">${this.escapeHtml(file.name)}</span>
-                </button>
-                <button type="button" class="home-row-menu-btn icon-btn" data-id="${file.id}" aria-label="More options for ${this.escapeHtml(file.name)}" title="More options">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                    <circle cx="12" cy="5" r="1.75"/>
-                    <circle cx="12" cy="12" r="1.75"/>
-                    <circle cx="12" cy="19" r="1.75"/>
-                  </svg>
-                </button>
-              </div>
-            `;
-          })
-          .join('');
-
-        // Wire click handlers for open and options menu
-        recentListEl.querySelectorAll('.home-file-open-btn').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            const id = btn.getAttribute('data-id');
-            const target = recentSlice.find((r) => r.file.id === id);
-            if (target) {
-              this.currentPath = target.path;
-              this.openFileDetailsOrViewer(target.file);
-            }
-          });
-        });
-
-        recentListEl.querySelectorAll('.home-row-menu-btn').forEach((btn) => {
-          btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const id = btn.getAttribute('data-id');
-            const target = recentSlice.find((r) => r.file.id === id);
-            if (target) {
-              this.currentPath = target.path;
-              this.openItemMenu(target.file, btn as HTMLElement);
-            }
-          });
-        });
       }
+    } catch (err) {
+      console.error('Failed to load storage info:', err);
     }
   }
 
@@ -1366,12 +1541,23 @@ class FileManagerApp {
 
     try {
       const pathParam = this.currentPath.join('/');
-      const res = await fetch(`/api/files?path=${encodeURIComponent(pathParam)}`);
-      const data = await res.json();
-      if (data.success) {
-        this.currentDirItems = data.items;
+      if (this.searchQuery) {
+        // Recursive real filesystem search
+        const res = await fetch(`/api/files/search?path=${encodeURIComponent(pathParam)}&query=${encodeURIComponent(this.searchQuery)}`);
+        const data = await res.json();
+        if (data.success && Array.isArray(data.results)) {
+          this.currentDirItems = data.results;
+        } else {
+          this.currentDirItems = [];
+        }
       } else {
-        this.currentDirItems = [];
+        const res = await fetch(`/api/files?path=${encodeURIComponent(pathParam)}`);
+        const data = await res.json();
+        if (data.success) {
+          this.currentDirItems = data.items;
+        } else {
+          this.currentDirItems = [];
+        }
       }
     } catch {
       this.currentDirItems = [];
@@ -1382,11 +1568,6 @@ class FileManagerApp {
     // Hidden files filter
     if (!this.showHiddenFiles) {
       items = items.filter((item) => !item.name.startsWith('.'));
-    }
-
-    // Search filter
-    if (this.searchQuery) {
-      items = items.filter((item) => item.name.toLowerCase().includes(this.searchQuery));
     }
 
     // Sorting
@@ -1413,27 +1594,39 @@ class FileManagerApp {
 
     this.emptyStateEl.hidden = true;
 
-    // Render items matching exact ASCII reference:
-    // [folder] FolderName     ›
-    // [file]   FileName       ⋮
-    // [zip]    ArchiveName    ⋮
+    // Render items with checkboxes in selection mode, archive badges, and real permissions
     this.fileListEl.innerHTML = items
       .map((item) => {
         const isFolder = item.type === 'folder';
+        const isArchive = item.type === 'archive';
+        const itemPath = item.path || item.name;
+        const isSelected = this.selectedItemPaths.has(itemPath);
         const { svg: iconSvg, category } = getFileAndFolderIcon(item);
+
+        const checkboxHtml = this.isSelectionMode
+          ? `<input type="checkbox" class="file-checkbox" data-path="${this.escapeHtml(itemPath)}" ${isSelected ? 'checked' : ''} aria-label="Select ${this.escapeHtml(item.name)}" />`
+          : '';
+
+        const extMatch = item.name.match(/\.(tar\.gz|tgz|zip|7z|tar|gz|rar|bz2|xz)$/i);
+        const extTag = extMatch ? extMatch[1].toUpperCase() : 'ZIP';
+        const archiveTagHtml = isArchive ? `<span class="archive-pill">${extTag}</span>` : '';
+
         const actionButton = isFolder
           ? `<span class="row-action-btn" aria-label="Open folder" role="img">${ACTION_ICONS.chevron}</span>`
           : `<button class="row-action-btn file-menu-btn" data-id="${item.id}" aria-label="More options for ${this.escapeHtml(item.name)}" title="More options">${ACTION_ICONS.dots}</button>`;
 
+        const permMeta = item.permissions ? ` · ${item.permissions}` : '';
+
         return `
-        <li class="file-row" data-id="${item.id}" role="listitem">
+        <li class="file-row ${isSelected ? 'selected' : ''}" data-id="${item.id}" data-path="${this.escapeHtml(itemPath)}" role="listitem">
+          ${checkboxHtml}
           <div class="file-row-main">
             <span class="item-icon-wrapper ${category}">
               ${iconSvg}
             </span>
             <div class="file-info">
-              <span class="file-name" title="${this.escapeHtml(item.name)}">${this.escapeHtml(item.name)}</span>
-              <span class="file-meta">${isFolder ? 'Folder' : item.sizeFormatted} · ${item.modifiedDate}</span>
+              <span class="file-name" title="${this.escapeHtml(item.name)}">${this.escapeHtml(item.name)}${archiveTagHtml}</span>
+              <span class="file-meta">${isFolder ? 'Folder' : item.sizeFormatted} · ${item.modifiedDate}${permMeta}</span>
             </div>
           </div>
           ${actionButton}
@@ -1468,6 +1661,17 @@ class FileManagerApp {
     this.closeAllMenus();
     this.selectedItem = item;
 
+    const isArchive = item.type === 'archive';
+    this.itemMenuPopupEl.querySelectorAll('.archive-only').forEach((el) => {
+      (el as HTMLElement).style.display = isArchive ? 'block' : 'none';
+    });
+    this.itemMenuPopupEl.querySelectorAll('.archive-divider').forEach((el) => {
+      (el as HTMLElement).style.display = isArchive ? 'block' : 'none';
+    });
+    this.itemMenuPopupEl.querySelectorAll('.non-archive-only').forEach((el) => {
+      (el as HTMLElement).style.display = isArchive ? 'none' : 'block';
+    });
+
     const rect = anchorBtn.getBoundingClientRect();
     const viewportRect = document.querySelector('.app-viewport')?.getBoundingClientRect();
 
@@ -1479,8 +1683,8 @@ class FileManagerApp {
     }
 
     // Keep within bottom bounds
-    if (top + 180 > window.innerHeight) {
-      top = rect.top - 180;
+    if (top + 260 > window.innerHeight) {
+      top = rect.top - 240;
     }
 
     this.itemMenuPopupEl.style.top = `${top}px`;
@@ -1686,18 +1890,94 @@ class FileManagerApp {
       const res = await fetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
       const data = await res.json();
       if (data.success) {
-        this.openModal({
-          title: item.name,
-          confirmLabel: 'Close',
-          isDanger: false,
-          renderContent: () => `
-            <div class="modal-file-viewer">${this.escapeHtml(data.content)}</div>
-          `,
-          onConfirm: () => {
-            this.closeModal();
-          },
-        });
-        return;
+        if (data.mediaType === 'image') {
+          this.openModal({
+            title: item.name,
+            confirmLabel: 'Close',
+            isDanger: false,
+            renderContent: () => `
+              <div class="modal-media-viewer">
+                <img src="${data.rawUrl}" alt="${this.escapeHtml(item.name)}" />
+              </div>
+              <div style="margin-top: 10px; font-size: 12px; color: var(--text-secondary); text-align: center;">
+                ${item.sizeFormatted || data.sizeFormatted} · ${item.modifiedDate || data.modifiedDate}
+              </div>
+            `,
+            onConfirm: () => {
+              this.closeModal();
+            },
+          });
+          return;
+        } else if (data.mediaType === 'audio') {
+          this.openModal({
+            title: item.name,
+            confirmLabel: 'Close',
+            isDanger: false,
+            renderContent: () => `
+              <div class="modal-media-viewer">
+                <audio controls src="${data.rawUrl}" style="width: 100%; margin: 12px 0;"></audio>
+              </div>
+              <div style="font-size: 12px; color: var(--text-secondary); text-align: center;">
+                ${item.sizeFormatted || data.sizeFormatted} · ${item.modifiedDate || data.modifiedDate}
+              </div>
+            `,
+            onConfirm: () => {
+              this.closeModal();
+            },
+          });
+          return;
+        } else if (data.mediaType === 'video') {
+          this.openModal({
+            title: item.name,
+            confirmLabel: 'Close',
+            isDanger: false,
+            renderContent: () => `
+              <div class="modal-media-viewer">
+                <video controls src="${data.rawUrl}" style="width: 100%; max-height: 260px;"></video>
+              </div>
+              <div style="margin-top: 10px; font-size: 12px; color: var(--text-secondary); text-align: center;">
+                ${item.sizeFormatted || data.sizeFormatted} · ${item.modifiedDate || data.modifiedDate}
+              </div>
+            `,
+            onConfirm: () => {
+              this.closeModal();
+            },
+          });
+          return;
+        } else if (data.mediaType === 'text') {
+          this.openModal({
+            title: item.name,
+            confirmLabel: 'Close',
+            isDanger: false,
+            renderContent: () => `
+              <div class="modal-file-viewer">${this.escapeHtml(data.content || '')}</div>
+              <div style="margin-top: 8px; text-align: right;">
+                <a href="${data.rawUrl}" download="${this.escapeHtml(item.name)}" style="color: var(--accent-blue); font-size: 12.5px; text-decoration: none;">Download raw file</a>
+              </div>
+            `,
+            onConfirm: () => {
+              this.closeModal();
+            },
+          });
+          return;
+        } else {
+          this.openModal({
+            title: item.name,
+            confirmLabel: 'Close',
+            isDanger: false,
+            renderContent: () => `
+              <div style="padding: 16px 8px; text-align: center;">
+                <div style="font-size: 14px; margin-bottom: 8px; color: var(--text-primary);">${this.escapeHtml(item.name)}</div>
+                <div style="font-size: 12.5px; color: var(--text-secondary); margin-bottom: 16px;">${item.sizeFormatted || data.sizeFormatted} · ${item.modifiedDate || data.modifiedDate}</div>
+                <a href="${data.rawUrl}" download="${this.escapeHtml(item.name)}" class="modal-btn" style="display: inline-block; padding: 8px 16px; background-color: var(--accent-blue); color: #fff; text-decoration: none; border-radius: 4px;">Download / Open</a>
+              </div>
+            `,
+            onConfirm: () => {
+              this.closeModal();
+            },
+          });
+          return;
+        }
       }
     } catch {
       // fallback
@@ -1733,12 +2013,487 @@ class FileManagerApp {
           <dd>${this.escapeHtml(fullPath)}</dd>
           <dt>Modified</dt>
           <dd>${item.modifiedDate}</dd>
+          <dt>Permissions</dt>
+          <dd style="font-family: monospace;">${item.permissions || '---------'}</dd>
         </dl>
       `,
       onConfirm: () => {
         this.closeModal();
       },
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Termux & Storage Root Management
+  // -------------------------------------------------------------------------
+  private async fetchTermuxStatus(): Promise<void> {
+    try {
+      const res = await fetch('/api/termux/status');
+      const data = await res.json();
+      if (data.success) {
+        this.storageLocations = data.locations || [];
+        this.activeLocationId = data.activeLocationId || '';
+        this.hasStoragePermission = data.hasStoragePermission;
+        this.isTermux = data.isTermux;
+
+        const currentLoc = this.storageLocations.find((l) => l.id === this.activeLocationId) || this.storageLocations[0];
+        if (this.btnStorageLocationEl && currentLoc) {
+          this.btnStorageLocationEl.innerHTML = `<span>${this.escapeHtml(currentLoc.name)}</span> <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>`;
+        }
+
+        if (this.termuxStorageBannerEl) {
+          this.termuxStorageBannerEl.hidden = this.hasStoragePermission;
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch Termux status:', err);
+    }
+  }
+
+  private async runTermuxSetupStorage(): Promise<void> {
+    try {
+      this.showToast('Triggering termux-setup-storage...');
+      const res = await fetch('/api/termux/setup-storage', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        this.showToast('Look at your phone and tap "ALLOW" on the Android permission popup');
+        setTimeout(() => this.fetchTermuxStatus(), 3000);
+      } else {
+        this.showToast(data.error || 'Failed to trigger storage setup');
+        this.showTermuxGuideModal();
+      }
+    } catch {
+      this.showTermuxGuideModal();
+    }
+  }
+
+  private showTermuxGuideModal(): void {
+    const termuxCommands = `# 1. Update Termux & install required archive utilities
+pkg update && pkg upgrade -y
+pkg install nodejs git p7zip zip unzip tar gzip -y
+
+# 2. Grant Android shared storage permission (Tap "Allow" on phone)
+termux-setup-storage
+
+# 3. Clone and launch File Manager
+git clone <your-repository-url> FileManager
+cd FileManager
+npm install
+npm run dev`;
+
+    this.openModal({
+      title: 'Termux Installation & Storage Guide',
+      confirmLabel: 'Copy Commands',
+      isDanger: false,
+      renderContent: () => `
+        <div style="font-size: 13px; line-height: 1.5; color: var(--text-primary);">
+          <p style="margin-bottom: 8px;">Run these commands in <strong>Termux</strong> on your Android phone to enable full storage access and archive tools (ZIP, 7Z, TAR, GZ):</p>
+          <pre class="termux-guide-box" id="termux-guide-code">${this.escapeHtml(termuxCommands)}</pre>
+          <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
+            💡 When <code>termux-setup-storage</code> runs, Android pops up a permission dialog: tap <strong>Allow</strong> to give access to shared internal storage and SD card.
+          </div>
+        </div>
+      `,
+      onConfirm: () => {
+        navigator.clipboard.writeText(termuxCommands).then(() => {
+          this.showToast('Termux commands copied to clipboard!');
+        }).catch(() => {
+          this.showToast('Select text to copy');
+        });
+        this.closeModal();
+      },
+    });
+  }
+
+  private showStorageSwitchModal(): void {
+    this.openModal({
+      title: 'Select Storage Location',
+      confirmLabel: 'Close',
+      isDanger: false,
+      renderContent: () => `
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          ${this.storageLocations.map((loc) => {
+            const isActive = loc.id === this.activeLocationId;
+            return `
+              <button type="button" class="storage-loc-btn ${isActive ? 'active' : ''}" data-loc-id="${loc.id}" style="
+                display: flex; flex-direction: column; text-align: left; padding: 10px 14px;
+                border-radius: 6px; border: 1px solid ${isActive ? 'var(--accent-blue)' : 'var(--border-subtle)'};
+                background: ${isActive ? 'var(--bg-surface-elevated)' : 'transparent'};
+                color: var(--text-primary); cursor: pointer;">
+                <div style="font-weight: 600; font-size: 14px; color: ${isActive ? 'var(--accent-blue)' : 'var(--text-primary)'};">
+                  ${this.escapeHtml(loc.name)} ${isActive ? '✓' : ''}
+                </div>
+                <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">${this.escapeHtml(loc.description)}</div>
+                <div style="font-size: 11px; color: var(--text-secondary); opacity: 0.8; font-family: monospace; margin-top: 2px;">${this.escapeHtml(loc.path)}</div>
+              </button>
+            `;
+          }).join('')}
+        </div>
+      `,
+      onConfirm: () => {
+        this.closeModal();
+      },
+    });
+
+    // Handle clicks on location choices
+    this.modalBodyEl.querySelectorAll('.storage-loc-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const locId = btn.getAttribute('data-loc-id');
+        if (locId && locId !== this.activeLocationId) {
+          try {
+            const res = await fetch('/api/termux/switch-location', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ locationId: locId }),
+            });
+            const data = await res.json();
+            if (data.success) {
+              this.activeLocationId = locId;
+              this.currentPath = [];
+              this.closeModal();
+              await this.fetchTermuxStatus();
+              await this.render();
+              this.showToast(`Switched to: ${data.activeLocation?.name || 'Storage'}`);
+            }
+          } catch (err: any) {
+            this.showToast(err.message || 'Failed to switch storage');
+          }
+        }
+      });
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Multi-Selection Mode
+  // -------------------------------------------------------------------------
+  private toggleSelectionMode(force?: boolean): void {
+    this.isSelectionMode = force !== undefined ? force : !this.isSelectionMode;
+    if (!this.isSelectionMode) {
+      this.selectedItemPaths.clear();
+    }
+    this.selectionBarEl.hidden = !this.isSelectionMode;
+    this.btnToggleSelectEl.classList.toggle('active', this.isSelectionMode);
+    this.updateSelectionBarUI();
+    this.renderFileList();
+  }
+
+  private toggleSelectItem(itemPath: string): void {
+    if (this.selectedItemPaths.has(itemPath)) {
+      this.selectedItemPaths.delete(itemPath);
+    } else {
+      this.selectedItemPaths.add(itemPath);
+    }
+    this.updateSelectionBarUI();
+    const row = this.fileListEl.querySelector(`[data-path="${CSS.escape(itemPath)}"]`);
+    if (row) {
+      const cb = row.querySelector('.file-checkbox') as HTMLInputElement | null;
+      if (cb) cb.checked = this.selectedItemPaths.has(itemPath);
+      row.classList.toggle('selected', this.selectedItemPaths.has(itemPath));
+    }
+  }
+
+  private toggleSelectAll(): void {
+    const allPaths = this.currentDirItems.map((i) => i.path || i.name);
+    if (this.selectedItemPaths.size === allPaths.length && allPaths.length > 0) {
+      this.selectedItemPaths.clear();
+    } else {
+      allPaths.forEach((p) => this.selectedItemPaths.add(p));
+    }
+    this.updateSelectionBarUI();
+    this.renderFileList();
+  }
+
+  private updateSelectionBarUI(): void {
+    const count = this.selectedItemPaths.size;
+    this.selectionCountEl.textContent = `${count} selected`;
+  }
+
+  private copySelectedItems(): void {
+    if (this.selectedItemPaths.size === 0) {
+      this.showToast('No items selected');
+      return;
+    }
+    this.setClipboard(Array.from(this.selectedItemPaths), 'copy');
+    this.toggleSelectionMode(false);
+  }
+
+  private cutSelectedItems(): void {
+    if (this.selectedItemPaths.size === 0) {
+      this.showToast('No items selected');
+      return;
+    }
+    this.setClipboard(Array.from(this.selectedItemPaths), 'move');
+    this.toggleSelectionMode(false);
+  }
+
+  private deleteSelectedItems(): void {
+    const count = this.selectedItemPaths.size;
+    if (count === 0) return;
+    this.openModal({
+      title: `Delete ${count} items`,
+      confirmLabel: 'Delete All',
+      isDanger: true,
+      renderContent: () => `
+        <p style="font-size: 14px; color: var(--text-primary); margin: 0;">
+          Are you sure you want to permanently delete <strong>${count}</strong> selected items?
+        </p>
+      `,
+      onConfirm: async () => {
+        try {
+          const res = await fetch('/api/files/batch-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ paths: Array.from(this.selectedItemPaths) }),
+          });
+          const data = await res.json();
+          if (data.success) {
+            this.showToast(`Deleted ${data.deletedCount} items`);
+            this.selectedItemPaths.clear();
+            this.toggleSelectionMode(false);
+            this.closeModal();
+            await this.renderFileList();
+          } else {
+            this.showToast(data.error || 'Failed to delete items');
+          }
+        } catch (err: any) {
+          this.showToast(err.message || 'Batch delete failed');
+        }
+      },
+    });
+  }
+
+  private compressSelectedItems(): void {
+    if (this.selectedItemPaths.size === 0) return;
+    const paths = Array.from(this.selectedItemPaths);
+    this.toggleSelectionMode(false);
+    this.promptCompress(paths, 'archive');
+  }
+
+  // -------------------------------------------------------------------------
+  // Clipboard Management (Copy / Move / Paste)
+  // -------------------------------------------------------------------------
+  private setClipboard(items: string[], action: 'copy' | 'move'): void {
+    this.clipboard = { items, action, sourceDir: this.currentPath.join('/') };
+    this.clipboardBarEl.hidden = false;
+    this.clipboardDescTextEl.textContent = `${items.length} ${items.length === 1 ? 'item' : 'items'} ready to ${action === 'copy' ? 'copy' : 'move'}`;
+    this.showToast(`${items.length} ${items.length === 1 ? 'item' : 'items'} in clipboard. Navigate to destination folder and tap "Paste Here"`);
+  }
+
+  private clearClipboard(): void {
+    this.clipboard = null;
+    this.clipboardBarEl.hidden = true;
+    this.showToast('Clipboard cleared');
+  }
+
+  private async pasteClipboard(): Promise<void> {
+    if (!this.clipboard || this.clipboard.items.length === 0) return;
+    const destinationDir = this.currentPath.join('/');
+    const action = this.clipboard.action;
+    const endpoint = action === 'copy' ? '/api/files/copy' : '/api/files/move';
+
+    this.showToast(`${action === 'copy' ? 'Copying' : 'Moving'} items...`);
+
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourcePaths: this.clipboard.items,
+          destinationDir,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        this.showToast(`${action === 'copy' ? 'Copied' : 'Moved'} successfully`);
+        this.clearClipboard();
+        await this.renderFileList();
+      } else {
+        this.showToast(data.error || `Failed to ${action}`);
+      }
+    } catch (err: any) {
+      this.showToast(err.message || `Failed to ${action}`);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // ZArchiver Features: Compress, Extract, and View Inside Archive
+  // -------------------------------------------------------------------------
+  private promptCompressFolder(): void {
+    const defaultName = this.currentPath.length > 0 ? this.currentPath[this.currentPath.length - 1] : 'storage_archive';
+    const allItems = this.currentDirItems.map((i) => i.path || i.name);
+    if (allItems.length === 0) {
+      this.showToast('Current folder is empty');
+      return;
+    }
+    this.promptCompress(allItems, defaultName);
+  }
+
+  private promptCompress(items?: string[], defaultName?: string): void {
+    const targetItems = items || (this.selectedItem ? [this.selectedItem.path || this.selectedItem.name] : []);
+    if (targetItems.length === 0) {
+      this.showToast('No items to compress');
+      return;
+    }
+
+    let selectedFormat = 'zip';
+    const baseName = (defaultName || 'archive').replace(/\.(tar\.gz|tgz|zip|7z|tar|gz)$/i, '');
+
+    this.openModal({
+      title: 'Compress to Archive (ZArchiver)',
+      confirmLabel: 'Create Archive',
+      isDanger: false,
+      renderContent: () => `
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <label style="font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; display: block;">Archive Name</label>
+            <input type="text" id="archive-name-input" class="modal-input" value="${this.escapeHtml(baseName)}" placeholder="Archive name" />
+          </div>
+
+          <div>
+            <label style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; display: block;">Archive Format</label>
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;">
+              <button type="button" class="format-choice-btn active" data-fmt="zip" style="padding: 8px 4px; font-size: 12px; font-weight: 600; border-radius: 4px; border: 1px solid var(--accent-blue); background: var(--bg-surface-elevated); color: var(--accent-blue); cursor: pointer;">ZIP</button>
+              <button type="button" class="format-choice-btn" data-fmt="7z" style="padding: 8px 4px; font-size: 12px; font-weight: 600; border-radius: 4px; border: 1px solid var(--border-subtle); background: transparent; color: var(--text-primary); cursor: pointer;">7Z</button>
+              <button type="button" class="format-choice-btn" data-fmt="tar" style="padding: 8px 4px; font-size: 12px; font-weight: 600; border-radius: 4px; border: 1px solid var(--border-subtle); background: transparent; color: var(--text-primary); cursor: pointer;">TAR</button>
+              <button type="button" class="format-choice-btn" data-fmt="tar.gz" style="padding: 8px 4px; font-size: 12px; font-weight: 600; border-radius: 4px; border: 1px solid var(--border-subtle); background: transparent; color: var(--text-primary); cursor: pointer;">TAR.GZ</button>
+            </div>
+          </div>
+
+          <div style="font-size: 12px; color: var(--text-secondary);">
+            Items to compress: <strong>${targetItems.length}</strong> file(s)/folder(s)
+          </div>
+        </div>
+      `,
+      onConfirm: async () => {
+        const input = document.getElementById('archive-name-input') as HTMLInputElement;
+        const name = input?.value.trim();
+        if (!name) return;
+
+        this.closeModal();
+        this.showToast(`Creating ${selectedFormat.toUpperCase()} archive...`);
+
+        try {
+          const res = await fetch('/api/archive/compress', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sourcePaths: targetItems,
+              archiveName: name,
+              format: selectedFormat,
+              destinationDir: this.currentPath.join('/'),
+            }),
+          });
+          const data = await res.json();
+          if (data.success) {
+            this.showToast(`Archive created: ${data.archiveName} (${data.sizeFormatted})`);
+            await this.renderFileList();
+          } else {
+            this.showToast(data.error || 'Compression failed');
+          }
+        } catch (err: any) {
+          this.showToast(err.message || 'Compression error');
+        }
+      },
+    });
+
+    // Format selection listeners
+    this.modalBodyEl.querySelectorAll('.format-choice-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const fmt = btn.getAttribute('data-fmt');
+        if (fmt) {
+          selectedFormat = fmt;
+          this.modalBodyEl.querySelectorAll('.format-choice-btn').forEach((b) => {
+            const isTarget = b === btn;
+            (b as HTMLElement).style.borderColor = isTarget ? 'var(--accent-blue)' : 'var(--border-subtle)';
+            (b as HTMLElement).style.color = isTarget ? 'var(--accent-blue)' : 'var(--text-primary)';
+            (b as HTMLElement).style.background = isTarget ? 'var(--bg-surface-elevated)' : 'transparent';
+          });
+        }
+      });
+    });
+  }
+
+  private async viewArchiveContents(item: FileItem): Promise<void> {
+    const archivePath = item.path || [...this.currentPath, item.name].join('/');
+    this.openModal({
+      title: `Archive: ${item.name}`,
+      confirmLabel: 'Extract All',
+      isDanger: false,
+      renderContent: () => `
+        <div style="text-align: center; padding: 20px 0; color: var(--text-secondary);">
+          <div style="margin-bottom: 8px;">Reading archive contents...</div>
+        </div>
+      `,
+      onConfirm: () => {
+        this.closeModal();
+        this.extractArchive(item, true);
+      },
+    });
+
+    try {
+      const res = await fetch(`/api/archive/list?path=${encodeURIComponent(archivePath)}`);
+      const data = await res.json();
+      if (data.success) {
+        if (!data.items || data.items.length === 0) {
+          this.modalBodyEl.innerHTML = `<div style="text-align: center; padding: 24px; color: var(--text-secondary);">Empty archive or no files detected inside.</div>`;
+          return;
+        }
+
+        this.modalBodyEl.innerHTML = `
+          <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; display: flex; justify-content: space-between;">
+            <span>${data.count} entries inside archive</span>
+            <span>Total: ${item.sizeFormatted}</span>
+          </div>
+          <div class="archive-viewer-container">
+            <ul class="archive-viewer-list">
+              ${data.items.map((entry: any) => `
+                <li class="archive-entry-row">
+                  <div class="archive-entry-name">${entry.isDirectory ? '📁 ' : '📄 '} ${this.escapeHtml(entry.path)}</div>
+                  <div class="archive-entry-meta">${entry.isDirectory ? 'Folder' : entry.sizeFormatted} · ${entry.date}</div>
+                </li>
+              `).join('')}
+            </ul>
+          </div>
+        `;
+      } else {
+        this.modalBodyEl.innerHTML = `
+          <div style="padding: 16px; color: #ff5252; font-size: 13px;">
+            ${this.escapeHtml(data.error || 'Failed to list archive contents')}
+            <div style="margin-top: 8px; color: var(--text-secondary);">
+              In Termux, install p7zip: <code>pkg install p7zip unzip tar -y</code>
+            </div>
+          </div>
+        `;
+      }
+    } catch (err: any) {
+      this.modalBodyEl.innerHTML = `<div style="color: #ff5252; padding: 12px;">${this.escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  private async extractArchive(item: FileItem, createFolder: boolean): Promise<void> {
+    const archivePath = item.path || [...this.currentPath, item.name].join('/');
+    this.showToast('Extracting archive...');
+
+    try {
+      const res = await fetch('/api/archive/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          archivePath,
+          destinationDir: this.currentPath.join('/'),
+          createFolder,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        this.showToast(`Extracted to: ${data.extractedTo}`);
+        await this.renderFileList();
+      } else {
+        this.showToast(data.error || 'Extraction failed');
+      }
+    } catch (err: any) {
+      this.showToast(err.message || 'Extraction error');
+    }
   }
 
   private openModal(config: {

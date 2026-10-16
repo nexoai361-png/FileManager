@@ -27,8 +27,18 @@
             </svg>
           </button>
           <h1 id="app-title" class="app-title">Files</h1>
+          <button id="btn-storage-location" class="storage-location-badge" title="Change storage drive" aria-label="Change storage drive">
+            <span>Storage</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
         </div>
         <div class="top-bar-right">
+          <button id="btn-toggle-select" class="icon-btn" aria-label="Select files" title="Select files">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="9 11 12 14 22 4"></polyline>
+              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+            </svg>
+          </button>
           <button id="btn-open-search" class="icon-btn" aria-label="Search files" title="Search files">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="11" cy="11" r="7"></circle>
@@ -45,10 +55,56 @@
         </div>
       </header>
 
+      <!-- Multi-Item Selection Action Bar -->
+      <div id="selection-bar" class="selection-bar" hidden>
+        <div class="selection-bar-left">
+          <button id="btn-select-all" class="selection-bar-btn">Select All</button>
+          <span id="selection-count" class="selection-count-text">0 selected</span>
+        </div>
+        <div class="selection-bar-right">
+          <button id="btn-sel-copy" class="selection-bar-btn" title="Copy selected">Copy</button>
+          <button id="btn-sel-cut" class="selection-bar-btn" title="Cut / Move selected">Cut</button>
+          <button id="btn-sel-compress" class="selection-bar-btn" title="Compress selected (ZIP/7Z/TAR)">Zip</button>
+          <button id="btn-sel-delete" class="selection-bar-btn danger" title="Delete selected">Delete</button>
+          <button id="btn-sel-close" class="selection-bar-btn" title="Close selection">✕</button>
+        </div>
+      </div>
+
+      <!-- Clipboard Floating Bar for Paste -->
+      <div id="clipboard-bar" class="clipboard-bar" hidden>
+        <div class="clipboard-desc">
+          <span>📋</span> <span id="clipboard-desc-text">0 items ready</span>
+        </div>
+        <div class="clipboard-actions">
+          <button id="btn-clipboard-paste" class="clipboard-btn primary">Paste Here</button>
+          <button id="btn-clipboard-cancel" class="clipboard-btn secondary">Cancel</button>
+        </div>
+      </div>
+
       <!-- Main Content Area -->
       <main id="main-content" class="main-area" tabindex="-1">
         <!-- Primary File List View -->
         <div id="files-view" class="tab-view" hidden>
+          <!-- Termux Storage Warning Banner -->
+          <div id="termux-storage-banner" class="termux-storage-banner" hidden>
+            <div class="termux-banner-header">
+              <span class="termux-banner-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                  <line x1="12" y1="9" x2="12" y2="13"></line>
+                  <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                </svg>
+              </span>
+              <span class="termux-banner-title">Termux Storage Permission Needed</span>
+            </div>
+            <p class="termux-banner-text">
+              Run <code>termux-setup-storage</code> in Termux and tap <strong>Allow</strong> to view and manage all Android files.
+            </p>
+            <div class="termux-banner-actions">
+              <button id="btn-run-termux-setup" class="termux-banner-btn primary">Setup Storage</button>
+              <button id="btn-view-termux-guide" class="termux-banner-btn secondary">Termux Commands</button>
+            </div>
+          </div>
           <!-- Search Row (Identical to Home Tab search box) -->
           <div class="files-search-row" id="files-search-row">
             <svg class="files-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -268,6 +324,14 @@
             </svg>
             <span>New file</span>
           </button>
+          <button id="btn-fab-compress" class="fab-menu-item">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+              <line x1="12" y1="22.08" x2="12" y2="12"></line>
+            </svg>
+            <span>Create archive</span>
+          </button>
         </div>
         <button id="btn-fab" class="fab-btn" aria-label="Create item" title="Create item" aria-expanded="false">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -303,6 +367,10 @@
 
       <!-- Top App Bar Overflow Menu -->
       <div id="top-menu-popup" class="popup-menu" style="top: 56px; right: 12px;" hidden>
+        <button id="menu-compress-folder" class="menu-item" style="color: var(--accent-blue); font-weight: 500;">Compress Folder</button>
+        <button id="menu-switch-storage" class="menu-item">Switch Storage Drive</button>
+        <button id="menu-termux-guide" class="menu-item">Termux Commands Guide</button>
+        <div class="menu-divider"></div>
         <button id="menu-sort-name" class="menu-item">Sort by Name</button>
         <button id="menu-sort-date" class="menu-item">Sort by Date</button>
         <button id="menu-sort-size" class="menu-item">Sort by Size</button>
@@ -313,9 +381,16 @@
 
       <!-- Item Overflow Menu -->
       <div id="item-menu-popup" class="popup-menu" hidden>
+        <button id="item-action-view-archive" class="menu-item archive-only" style="color: #ffb74d; font-weight: 600;">View Contents (Archive)</button>
+        <button id="item-action-extract-here" class="menu-item archive-only">Extract Here</button>
+        <button id="item-action-extract-folder" class="menu-item archive-only">Extract to Folder</button>
+        <button id="item-action-compress" class="menu-item non-archive-only">Compress (ZIP/7Z/TAR)...</button>
+        <div class="menu-divider archive-divider"></div>
         <button id="item-action-open" class="menu-item">Open</button>
+        <button id="item-action-copy" class="menu-item">Copy</button>
+        <button id="item-action-cut" class="menu-item">Cut / Move</button>
         <button id="item-action-rename" class="menu-item">Rename</button>
-        <button id="item-action-details" class="menu-item">Details</button>
+        <button id="item-action-details" class="menu-item">Details & Permissions</button>
         <div class="menu-divider"></div>
         <button id="item-action-delete" class="menu-item danger">Delete</button>
       </div>
