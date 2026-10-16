@@ -1,0 +1,6 @@
+{
+  "name": "Android File Manager",
+  "description": "Minimal, pure AMOLED black Android-style file manager with fast search, file actions, and clean SVG icons.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
